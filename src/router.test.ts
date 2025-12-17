@@ -398,6 +398,35 @@ describe("error handling", () => {
 	});
 });
 
+describe("addEndpoint", () => {
+	it("should add an endpoint to existing router", async () => {
+		const router = createRouter({});
+
+		router.addEndpoint(createEndpoint(
+			"/dynamic_added",
+			{
+				method: "POST",
+			},
+			async (c) => {
+				return { message: "dynamically added", body: c.body };
+			},
+		));
+
+		const dynamicRequest = new Request("http://localhost/dynamic_added", {
+			method: "POST",
+			body: JSON.stringify({ test: "data" }),
+			headers: {
+				"Content-Type": "application/json",
+			},
+		});
+		const dynamicResponse = await router.handler(dynamicRequest);
+		expect(dynamicResponse.status).toBe(200);
+		const jsonResponse = await dynamicResponse.json();
+		expect(jsonResponse.message).toBe("dynamically added");
+		expect(jsonResponse.body).toEqual({ test: "data" });
+	});
+});
+
 describe("extend", () => {
 	it("should extend the router with new endpoints", async () => {
 		const initialEndpoint = createEndpoint("/initial", { method: "GET" }, async () => ({}));
@@ -431,5 +460,4 @@ describe("extend", () => {
 		expect(jsonResponse.message).toBe("dynamically added");
 		expect(jsonResponse.body).toEqual({ test: "data" });
 	});
-
 });
