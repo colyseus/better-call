@@ -3,7 +3,7 @@ import { type Endpoint, createEndpoint } from "./endpoint";
 import type { Middleware } from "./middleware";
 import { generator, getHTML } from "./openapi";
 import { toResponse } from "./to-response";
-import { getBody, isAPIError } from "./utils";
+import { getBody, isAPIError, isRequest } from "./utils";
 
 export interface RouterConfig {
 	throwError?: boolean;
@@ -27,6 +27,26 @@ export interface RouterConfig {
 	 * A callback to run before any request
 	 */
 	onRequest?: (req: Request) => any | Promise<any>;
+	/**
+	 * List of allowed media types (MIME types) for the router
+	 *
+	 * if provided, only the media types in the list will be allowed to be passed in the body.
+	 *
+	 * If an endpoint has allowed media types, it will override the router's allowed media types.
+	 *
+	 * @example
+	 * ```ts
+	 * const router = createRouter({
+	 * 		allowedMediaTypes: ["application/json", "application/x-www-form-urlencoded"],
+	 * 	})
+	 */
+	allowedMediaTypes?: string[];
+	/**
+	 * Skip trailing slashes
+	 *
+	 * @default false
+	 */
+	skipTrailingSlashes?: boolean;
 	/**
 	 * Open API route configuration
 	 */
@@ -124,30 +144,44 @@ export const createRouter = <E extends Record<string, Endpoint>, Config extends 
 
 	const processRequest = async (request: Request) => {
 		const url = new URL(request.url);
-		const path = config?.basePath
-			? url.pathname
-					.split(config.basePath)
-					.reduce((acc, curr, index) => {
-						if (index !== 0) {
-							if (index > 1) {
-								acc.push(`${config.basePath}${curr}`);
-							} else {
-								acc.push(curr);
+		const pathname = url.pathname;
+		const path =
+			config?.basePath && config.basePath !== "/"
+				? pathname
+						.split(config.basePath)
+						.reduce((acc, curr, index) => {
+							if (index !== 0) {
+								if (index > 1) {
+									acc.push(`${config.basePath}${curr}`);
+								} else {
+									acc.push(curr);
+								}
 							}
-						}
-						return acc;
-					}, [] as string[])
-					.join("")
-			: url.pathname;
-
+							return acc;
+						}, [] as string[])
+						.join("")
+				: url.pathname;
 		if (!path?.length) {
 			return new Response(null, { status: 404, statusText: "Not Found" });
 		}
 
-		const route = findRoute(router, request.method, path);
-		if (!route?.data) {
+		// Reject paths with consecutive slashes
+		if (/\/{2,}/.test(path)) {
 			return new Response(null, { status: 404, statusText: "Not Found" });
 		}
+
+		const route = findRoute(router, request.method, path) as {
+			data: Endpoint & { path: string };
+			params: Record<string, string>;
+		};
+		const hasTrailingSlash = path.endsWith("/");
+		const routeHasTrailingSlash = route?.data?.path?.endsWith("/");
+
+		// If the path has a trailing slash and the route doesn't have a trailing slash and skipTrailingSlashes is not set, return 404
+		if (hasTrailingSlash !== routeHasTrailingSlash && !config?.skipTrailingSlashes) {
+			return new Response(null, { status: 404, statusText: "Not Found" });
+		}
+		if (!route?.data) return new Response(null, { status: 404, statusText: "Not Found" });
 
 		const query: Record<string, string | string[]> = {};
 		url.searchParams.forEach((value, key) => {
@@ -163,22 +197,28 @@ export const createRouter = <E extends Record<string, Endpoint>, Config extends 
 		});
 
 		const handler = route.data as Endpoint;
-		const context = {
-			path,
-			method: request.method as "GET",
-			headers: request.headers,
-			params: route.params ? (JSON.parse(JSON.stringify(route.params)) as any) : {},
-			request: request,
-			body: handler.options.disableBody
-				? undefined
-				: await getBody(handler.options.cloneRequest ? request.clone() : request),
-			query,
-			_flag: "router" as const,
-			asResponse: true,
-			context: config?.routerContext,
-		};
 
 		try {
+			// Determine which allowedMediaTypes to use: endpoint-level overrides router-level
+			const allowedMediaTypes =
+				handler.options.metadata?.allowedMediaTypes || config?.allowedMediaTypes;
+			const context = {
+				path,
+				method: request.method as "GET",
+				headers: request.headers,
+				params: route.params ? (JSON.parse(JSON.stringify(route.params)) as any) : {},
+				request: request,
+				body: handler.options.disableBody
+					? undefined
+					: await getBody(
+							handler.options.cloneRequest ? request.clone() : request,
+							allowedMediaTypes,
+						),
+				query,
+				_flag: "router" as const,
+				asResponse: true,
+				context: config?.routerContext,
+			};
 			const middlewareRoutes = findAllRoutes(middlewareRouter, "*", path);
 			if (middlewareRoutes?.length) {
 				for (const { data: middleware, params } of middlewareRoutes) {
@@ -233,7 +273,7 @@ export const createRouter = <E extends Record<string, Endpoint>, Config extends 
 			if (onReq instanceof Response) {
 				return onReq;
 			}
-			const req = onReq instanceof Request ? onReq : request;
+			const req = isRequest(onReq) ? onReq : request;
 			const res = await processRequest(req);
 			const onRes = await config?.onResponse?.(res);
 			if (onRes instanceof Response) {

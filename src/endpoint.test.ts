@@ -27,7 +27,7 @@ describe("validation", (it) => {
 				//@ts-expect-error
 				body: { name: 1 },
 			}),
-		).rejects.toThrowError("Invalid body parameters");
+		).rejects.toThrowError("[body.name] Invalid type: Expected string but received 1");
 	});
 
 	it("should validate query and throw validation error", async () => {
@@ -49,7 +49,7 @@ describe("validation", (it) => {
 				//@ts-expect-error
 				query: { name: 1 },
 			}),
-		).rejects.toThrowError(`Invalid query parameters`);
+		).rejects.toThrowError(`[query.name] Invalid type: Expected string but received 1`);
 	});
 
 	it("should validate the body and return the body", async () => {
@@ -108,6 +108,44 @@ describe("validation", (it) => {
 				},
 				async (ctx) => {
 					return ctx.body;
+				},
+			),
+		).toThrowError(BetterCallError);
+	});
+
+	it("should throw BetterCallError if path contains consecutive slashes", async () => {
+		expect(() =>
+			createEndpoint(
+				"/test//path",
+				{
+					method: "GET",
+				},
+				async () => {
+					return "hello";
+				},
+			),
+		).toThrowError(BetterCallError);
+
+		expect(() =>
+			createEndpoint(
+				"//test",
+				{
+					method: "GET",
+				},
+				async () => {
+					return "hello";
+				},
+			),
+		).toThrowError(BetterCallError);
+
+		expect(() =>
+			createEndpoint(
+				"/test///nested",
+				{
+					method: "GET",
+				},
+				async () => {
+					return "hello";
 				},
 			),
 		).toThrowError(BetterCallError);
@@ -316,8 +354,11 @@ describe("types", async () => {
 				expectTypeOf(ctx.method).toEqualTypeOf<"POST" | "GET">();
 			},
 		);
-		//@ts-expect-error - method should be required
+		// method should be optional for array methods (defaults to first method)
 		endpoint({});
+		// but you can still explicitly specify a method
+		endpoint({ method: "POST" });
+		endpoint({ method: "GET" });
 		const wildCardMethodEndpoint = createEndpoint(
 			"/test",
 			{
@@ -329,7 +370,7 @@ describe("types", async () => {
 				>();
 			},
 		);
-		//@ts-expect-error -
+		//@ts-expect-error - wildcard method should still require explicit method
 		wildCardMethodEndpoint({});
 	});
 	it("response", async () => {
@@ -385,6 +426,24 @@ describe("types", async () => {
 	});
 });
 
+describe("virtual endpoints", () => {
+	it("should work for path-less endpoints", async () => {
+		for (const value of [1, "hello", true]) {
+			const endpoint = createEndpoint(
+				{
+					method: "POST",
+				},
+				async (ctx) => {
+					expect(ctx.path).toBe("virtual:");
+					return value;
+				},
+			);
+			const response = await endpoint();
+			expect(response).toBe(value);
+		}
+	});
+});
+
 describe("response", () => {
 	describe("flat", () => {
 		it("should return primitive values", async () => {
@@ -401,6 +460,110 @@ describe("response", () => {
 				const response = await endpoint();
 				expect(response).toBe(value);
 			}
+		});
+	});
+
+	describe("setStatus", () => {
+		it("should provide access to the response status on a plain object", async () => {
+			const endpoint = createEndpoint(
+				"/path",
+				{
+					method: "POST",
+				},
+				async (ctx) => {
+					ctx.setStatus(201);
+					return { test: "response" };
+				},
+			);
+			const response = await endpoint({
+				returnStatus: true,
+			});
+			expect(response.status).toBe(201);
+			expect(response.response).toMatchObject({
+				test: "response",
+			});
+		});
+
+		it("should provide access to the response status and headers on a plain object", async () => {
+			const endpoint = createEndpoint(
+				"/path",
+				{
+					method: "POST",
+				},
+				async (ctx) => {
+					ctx.setStatus(201);
+					return { test: "response" };
+				},
+			);
+			const response = await endpoint({
+				returnStatus: true,
+				returnHeaders: true,
+			});
+			expect(response.status).toBe(201);
+			expect(response.headers).toBeInstanceOf(Headers);
+			expect(response.response).toMatchObject({
+				test: "response",
+			});
+		});
+
+		it("should provide access to the response status and headers on ctx.json()", async () => {
+			const endpoint = createEndpoint(
+				"/path",
+				{
+					method: "POST",
+				},
+				async (ctx) => {
+					ctx.setStatus(201);
+					return ctx.json({ test: "response" });
+				},
+			);
+			const response = await endpoint({
+				returnStatus: true,
+			});
+			expect(response.status).toBe(201);
+			expect(response.response).toMatchObject({
+				test: "response",
+			});
+		});
+
+		it("should provide access to the response status and headers on a plain object (as response)", async () => {
+			const endpoint = createEndpoint(
+				"/path",
+				{
+					method: "POST",
+				},
+				async (ctx) => {
+					ctx.setStatus(201);
+					return { test: "response" };
+				},
+			);
+			const response = await endpoint({
+				asResponse: true,
+			});
+			expect(response.status).toBe(201);
+			expect(response.headers).toBeInstanceOf(Headers);
+			expect(await response.json()).toMatchObject({
+				test: "response",
+			});
+		});
+
+		it("should provide access to the response status and headers on a response object", async () => {
+			const endpoint = createEndpoint(
+				"/path",
+				{
+					method: "POST",
+				},
+				async (ctx) => {
+					ctx.setStatus(201); // ignored
+					return Response.json({ test: "response" });
+				},
+			);
+			const response = await endpoint();
+			expect(response.status).toBe(200);
+			expect(response.headers).toBeInstanceOf(Headers);
+			expect(await response.json()).toMatchObject({
+				test: "response",
+			});
 		});
 	});
 
@@ -444,6 +607,31 @@ describe("response", () => {
 				test: "response",
 			});
 			expect(response.status).toBe(201);
+		});
+
+		it("should return a correct header asResponse", async () => {
+			const endpoint = createEndpoint(
+				"/path",
+				{
+					method: "POST",
+					status: 201,
+				},
+				async (ctx) => {
+					ctx.setHeader("X-Custom-Header", "hello world");
+					return ctx.json({ test: "response" });
+				},
+			);
+
+			const response = await endpoint({
+				asResponse: true,
+			});
+
+			const json = await response.json();
+			expect(json).toStrictEqual({
+				test: "response",
+			});
+			const headers = response.headers.get("X-Custom-Header");
+			expect(headers).toBe("hello world");
 		});
 	});
 
@@ -603,6 +791,39 @@ describe("response", () => {
 			expect(body).toMatchObject({
 				message: "error message",
 			});
+		});
+
+		it("custom validation errors", async () => {
+			const endpoint = createEndpoint(
+				"/endpoint",
+				{
+					method: "POST",
+					body: z.string().min(1000),
+					onValidationError({ issues, message }) {
+						expect(typeof message).toBe("string");
+						expect(issues.length).toBeGreaterThan(0);
+						throw new APIError("I'M_A_TEAPOT", {
+							message: "Such a useful error status.",
+						});
+					},
+				},
+				async (c) => {
+					return c.json({
+						success: false, // Should never receive this.
+					});
+				},
+			);
+			try {
+				const response = await endpoint({ body: "I'm less than 1000 characters" });
+				// This ensures that there is an error thrown.
+				expect(response).not.toBeCalled();
+			} catch (error) {
+				expect(error).toBeInstanceOf(APIError);
+				if (!(error instanceof APIError)) return;
+				// Ensure it's the validation error we defined.
+				expect(error.status).toBe("I'M_A_TEAPOT");
+				expect(error.message).toBe("Such a useful error status.");
+			}
 		});
 	});
 	describe("json", async () => {

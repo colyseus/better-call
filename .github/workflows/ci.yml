@@ -31,9 +31,21 @@ jobs:
             
             - name: Lint
               run: pnpm lint
+
+            - name: Lint dependencies
+              run: pnpm lint:dependencies
+
+            - name: Lint package
+              run: pnpm lint:package
+
+            - name: Lint types
+              run: pnpm lint:types
+
+            - name: Lint spell
+              run: pnpm lint:spell
             
             - name: Test
-              run: pnpm test
+              run: pnpm coverage
 
             - name: Typecheck
               run: pnpm typecheck

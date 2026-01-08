@@ -1,5 +1,5 @@
 import type { EndpointOptions } from "./endpoint";
-import { _statusCode, APIError, type Status } from "./error";
+import { type statusCodes, APIError, ValidationError, type Status } from "./error";
 import type {
 	InferParamPath,
 	InferParamWildCard,
@@ -19,6 +19,7 @@ import {
 } from "./cookies";
 import { getCryptoKey, verifySignature } from "./crypto";
 import type { StandardSchemaV1 } from "./standard-schema";
+import { isRequest } from "./utils";
 
 export type HTTPMethod = "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
 export type Method = HTTPMethod | "*";
@@ -92,7 +93,7 @@ export type InferMethod<Options extends EndpointOptions> = Options["method"] ext
 export type InferInputMethod<
 	Options extends EndpointOptions,
 	Method = Options["method"] extends Array<any>
-		? Options["method"][number]
+		? Options["method"][number] | undefined
 		: Options["method"] extends "*"
 			? HTTPMethod
 			: Options["method"] | undefined,
@@ -104,21 +105,21 @@ export type InferInputMethod<
 			method: Method;
 		};
 
-export type InferParam<Path extends string> = IsEmptyObject<
-	InferParamPath<Path> & InferParamWildCard<Path>
-> extends true
+export type InferParam<Path extends string> = [Path] extends [never]
 	? Record<string, any> | undefined
-	: Prettify<InferParamPath<Path> & InferParamWildCard<Path>>;
+	: IsEmptyObject<InferParamPath<Path> & InferParamWildCard<Path>> extends true
+		? Record<string, any> | undefined
+		: Prettify<InferParamPath<Path> & InferParamWildCard<Path>>;
 
-export type InferParamInput<Path extends string> = IsEmptyObject<
-	InferParamPath<Path> & InferParamWildCard<Path>
-> extends true
-	? {
-			params?: Record<string, any>;
-		}
-	: {
-			params: Prettify<InferParamPath<Path> & InferParamWildCard<Path>>;
-		};
+export type InferParamInput<Path extends string> = [Path] extends [never]
+	? { params?: Record<string, any> }
+	: IsEmptyObject<InferParamPath<Path> & InferParamWildCard<Path>> extends true
+		? {
+				params?: Record<string, any>;
+			}
+		: {
+				params: Prettify<InferParamPath<Path> & InferParamWildCard<Path>>;
+			};
 
 export type InferRequest<Option extends EndpointOptions | MiddlewareOptions> =
 	Option["requireRequest"] extends true ? Request : Request | undefined;
@@ -154,7 +155,6 @@ export type InferMiddlewareBody<Options extends MiddlewareOptions> =
 export type InferMiddlewareQuery<Options extends MiddlewareOptions> =
 	Options["query"] extends StandardSchemaV1<infer T> ? T : Record<string, any> | undefined;
 
-type StrictKeys<T, U extends T = T> = Exclude<keyof U, keyof T> extends never ? U : never;
 export type InputContext<
 	Path extends string,
 	Options extends EndpointOptions,
@@ -166,7 +166,9 @@ export type InputContext<
 	InferHeadersInput<Options> & {
 		asResponse?: boolean;
 		returnHeaders?: boolean;
+		returnStatus?: boolean;
 		use?: Middleware[];
+		path?: string;
 	};
 
 export const createInternalContext = async (
@@ -176,38 +178,44 @@ export const createInternalContext = async (
 		path,
 	}: {
 		options: EndpointOptions;
-		path: string;
+		path?: string;
 	},
 ) => {
 	const headers = new Headers();
+	let responseStatus: Status | undefined = undefined;
+
 	const { data, error } = await runValidation(options, context);
 	if (error) {
-		throw new APIError(400, {
-			message: error.message,
-			code: "VALIDATION_ERROR",
-		});
+		throw new ValidationError(error.message, error.issues);
 	}
-	const requestHeaders: Headers =
+	const requestHeaders: Headers | null =
 		"headers" in context
 			? context.headers instanceof Headers
 				? context.headers
 				: new Headers(context.headers)
-			: "request" in context && context.request instanceof Request
+			: "request" in context && isRequest(context.request)
 				? context.request.headers
-				: new Headers();
-	const requestCookies = requestHeaders.get("cookie");
+				: null;
+	const requestCookies = requestHeaders?.get("cookie");
 	const parsedCookies = requestCookies ? parseCookies(requestCookies) : undefined;
+
 	const internalContext = {
 		...context,
 		body: data.body,
 		query: data.query,
-		path: path,
+		path: context.path || path || "virtual:",
 		context: "context" in context && context.context ? context.context : {},
 		returned: undefined as any,
 		headers: context?.headers,
 		request: context?.request,
 		params: "params" in context ? context.params : undefined,
-		method: context.method,
+		method:
+			context.method ??
+			(Array.isArray(options.method)
+				? options.method[0]
+				: options.method === "*"
+					? "GET"
+					: options.method),
 		setHeader: (key: string, value: string) => {
 			headers.set(key, value);
 		},
@@ -264,7 +272,7 @@ export const createInternalContext = async (
 			return new APIError("FOUND", undefined, headers);
 		},
 		error: (
-			status: keyof typeof _statusCode | Status,
+			status: keyof typeof statusCodes | Status,
 			body?:
 				| {
 						message?: string;
@@ -274,6 +282,9 @@ export const createInternalContext = async (
 			headers?: HeadersInit,
 		) => {
 			return new APIError(status, body, headers);
+		},
+		setStatus: (status: Status) => {
+			responseStatus = status;
 		},
 		json: (
 			json: Record<string, any>,
@@ -296,6 +307,9 @@ export const createInternalContext = async (
 			};
 		},
 		responseHeaders: headers,
+		get responseStatus() {
+			return responseStatus;
+		},
 	};
 	//if context was shimmed through the input we want to apply it
 	for (const middleware of options.use || []) {

@@ -1,3 +1,4 @@
+import type { StandardSchemaV1 } from "./standard-schema";
 // https://github.com/nodejs/node/blob/360f7cc7867b43344aac00564286b895e15f21d7/lib/internal/errors.js#L246C1-L261C2
 function isErrorStackTraceLimitWritable() {
 	const desc = Object.getOwnPropertyDescriptor(Error, "stackTraceLimit");
@@ -69,7 +70,7 @@ export function makeErrorForHideStackFrame<B extends new (...args: any[]) => Err
 	return HideStackFramesError as any;
 }
 
-export const _statusCode = {
+export const statusCodes = {
 	OK: 200,
 	CREATED: 201,
 	ACCEPTED: 202,
@@ -189,7 +190,7 @@ export type Status =
 
 class InternalAPIError extends Error {
 	constructor(
-		public status: keyof typeof _statusCode | Status = "INTERNAL_SERVER_ERROR",
+		public status: keyof typeof statusCodes | Status = "INTERNAL_SERVER_ERROR",
 		public body:
 			| ({
 					message?: string;
@@ -198,7 +199,7 @@ class InternalAPIError extends Error {
 			  } & Record<string, any>)
 			| undefined = undefined,
 		public headers: HeadersInit = {},
-		public statusCode = typeof status === "number" ? status : _statusCode[status],
+		public statusCode = typeof status === "number" ? status : statusCodes[status],
 	) {
 		super(
 			body?.message,
@@ -221,6 +222,20 @@ class InternalAPIError extends Error {
 					...body,
 				}
 			: undefined;
+	}
+}
+
+export class ValidationError extends InternalAPIError {
+	constructor(
+		public message: string,
+		public issues: readonly StandardSchemaV1.Issue[],
+	) {
+		super(400, {
+			message: message,
+			code: "VALIDATION_ERROR",
+		});
+
+		this.issues = issues;
 	}
 }
 

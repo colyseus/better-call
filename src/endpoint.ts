@@ -14,10 +14,10 @@ import {
 	type Method,
 } from "./context";
 import type { CookieOptions, CookiePrefixOptions } from "./cookies";
-import { type APIError, type _statusCode, type Status, BetterCallError } from "./error";
+import { APIError, ValidationError, type statusCodes, type Status, BetterCallError } from "./error";
 import type { OpenAPIParameter, OpenAPISchemaType } from "./openapi";
 import type { StandardSchemaV1 } from "./standard-schema";
-import { isAPIError } from "./utils";
+import { isAPIError, tryCatch } from "./utils";
 
 export interface EndpointBaseOptions {
 	/**
@@ -133,8 +133,40 @@ export interface EndpointBaseOptions {
 		};
 		/**
 		 * If enabled, endpoint won't be exposed over a router
+		 * @deprecated Use path-less endpoints instead
 		 */
 		SERVER_ONLY?: boolean;
+		/**
+		 * If enabled, endpoint won't be exposed as an action to the client
+		 * @deprecated Use path-less endpoints instead
+		 */
+		isAction?: boolean;
+		/**
+		 * Defines the places where the endpoint will be available
+		 *
+		 * Possible options:
+		 * - `rpc` - the endpoint is exposed to the router, can be invoked directly and is available to the client
+		 * - `server` - the endpoint is exposed to the router, can be invoked directly, but is not available to the client
+		 * - `http` - the endpoint is only exposed to the router
+		 * @default "rpc"
+		 */
+		scope?: "rpc" | "server" | "http";
+		/**
+		 * List of allowed media types (MIME types) for the endpoint
+		 *
+		 * if provided, only the media types in the list will be allowed to be passed in the body
+		 *
+		 * @example
+		 * ```ts
+		 * const endpoint = createEndpoint("/path", {
+		 * 		method: "POST",
+		 * 		allowedMediaTypes: ["application/json", "application/x-www-form-urlencoded"],
+		 * 	}, async(ctx)=>{
+		 * 		const body = ctx.body
+		 * 	})
+		 * ```
+		 */
+		allowedMediaTypes?: string[];
 		/**
 		 * Extra metadata
 		 */
@@ -151,6 +183,14 @@ export interface EndpointBaseOptions {
 	 * @returns - The response to return
 	 */
 	onAPIError?: (e: APIError) => void | Promise<void>;
+	/**
+	 * A callback to run before a validation error is thrown
+	 * You can customize the validation error message by throwing your own APIError
+	 */
+	onValidationError?: ({
+		issues,
+		message,
+	}: { message: string; issues: readonly StandardSchemaV1.Issue[] }) => void | Promise<void>;
 }
 
 export type EndpointBodyMethodOptions =
@@ -254,6 +294,10 @@ export type EndpointContext<Path extends string, Options extends EndpointOptions
 	 */
 	setHeader: (key: string, value: string) => void;
 	/**
+	 * Set the response status code
+	 */
+	setStatus: (status: Status) => void;
+	/**
 	 * Get header
 	 *
 	 * If it's called outside of a request it will just return null
@@ -276,13 +320,13 @@ export type EndpointContext<Path extends string, Options extends EndpointOptions
 	 * @param key - The key of the cookie
 	 * @param secret - The secret of the signed cookie
 	 * @param prefix - The prefix of the cookie between `__Secure-` and `__Host-`
-	 * @returns
+	 * @returns - The value of the cookie or null if the cookie is not found or false if the signature is invalid
 	 */
 	getSignedCookie: (
 		key: string,
 		secret: string,
 		prefix?: CookiePrefixOptions,
-	) => Promise<string | null>;
+	) => Promise<string | null | false>;
 	/**
 	 * Set a cookie value in the response
 	 *
@@ -345,7 +389,7 @@ export type EndpointContext<Path extends string, Options extends EndpointOptions
 	 * Return error
 	 */
 	error: (
-		status: keyof typeof _statusCode | Status,
+		status: keyof typeof statusCodes | Status,
 		body?: {
 			message?: string;
 			code?: string;
@@ -354,34 +398,112 @@ export type EndpointContext<Path extends string, Options extends EndpointOptions
 	) => APIError;
 };
 
-export const createEndpoint = <Path extends string, Options extends EndpointOptions, R>(
+type EndpointHandler<Path extends string, Options extends EndpointOptions, R> = (
+	context: EndpointContext<Path, Options>,
+) => Promise<R>;
+
+export function createEndpoint<Path extends string, Options extends EndpointOptions, R>(
 	path: Path,
 	options: Options,
-	handler: (context: EndpointContext<Path, Options>) => Promise<R>,
-): StrictEndpoint<Path, Options, R> => {
+	handler: EndpointHandler<Path, Options, R>,
+): StrictEndpoint<Path, Options, R>;
+
+export function createEndpoint<Options extends EndpointOptions, R>(
+	options: Options,
+	handler: EndpointHandler<never, Options, R>,
+): StrictEndpoint<never, Options, R>;
+
+export function createEndpoint<Path extends string, Options extends EndpointOptions, R>(
+	pathOrOptions: Path | Options,
+	handlerOrOptions: EndpointHandler<Path, Options, R> | Options,
+	handlerOrNever?: any,
+): StrictEndpoint<Path, Options, R> {
+	const path: string | undefined = typeof pathOrOptions === "string" ? pathOrOptions : undefined;
+	const options: Options =
+		typeof handlerOrOptions === "object" ? handlerOrOptions : (pathOrOptions as Options);
+	const handler: EndpointHandler<Path, Options, R> =
+		typeof handlerOrOptions === "function" ? handlerOrOptions : handlerOrNever;
+
 	if ((options.method === "GET" || options.method === "HEAD") && options.body) {
 		throw new BetterCallError("Body is not allowed with GET or HEAD methods");
 	}
+
+	if (path && /\/{2,}/.test(path)) {
+		throw new BetterCallError("Path cannot contain consecutive slashes");
+	}
 	type Context = InputContext<Path, Options>;
+
+	type ResultType<
+		AsResponse extends boolean,
+		ReturnHeaders extends boolean,
+		ReturnStatus extends boolean,
+	> = AsResponse extends true
+		? Response
+		: ReturnHeaders extends true
+			? ReturnStatus extends true
+				? {
+						headers: Headers;
+						status: number;
+						response: Awaited<R>;
+					}
+				: {
+						headers: Headers;
+						response: Awaited<R>;
+					}
+			: ReturnStatus extends true
+				? {
+						status: number;
+						response: Awaited<R>;
+					}
+				: Awaited<R>;
+
 	const internalHandler = async <
 		AsResponse extends boolean = false,
 		ReturnHeaders extends boolean = false,
+		ReturnStatus extends boolean = false,
 	>(
 		...inputCtx: HasRequiredKeys<Context> extends true
-			? [Context & { asResponse?: AsResponse; returnHeaders?: ReturnHeaders }]
-			: [(Context & { asResponse?: AsResponse; returnHeaders?: ReturnHeaders })?]
-	): Promise<
-		AsResponse extends true
-			? Response
-			: ReturnHeaders extends true
-				? { headers: Headers; response: Awaited<R> }
-				: Awaited<R>
-	> => {
+			? [
+					Context & {
+						asResponse?: AsResponse;
+						returnHeaders?: ReturnHeaders;
+						returnStatus?: ReturnStatus;
+					},
+				]
+			: [
+					(Context & {
+						asResponse?: AsResponse;
+						returnHeaders?: ReturnHeaders;
+						returnStatus?: ReturnStatus;
+					})?,
+				]
+	): Promise<ResultType<AsResponse, ReturnHeaders, ReturnStatus>> => {
 		const context = (inputCtx[0] || {}) as InputContext<any, any>;
-		const internalContext = await createInternalContext(context, {
-			options,
-			path,
-		});
+		const { data: internalContext, error: validationError } = await tryCatch(
+			createInternalContext(context, {
+				options,
+				path,
+			}),
+		);
+
+		if (validationError) {
+			// If it's not a validation error, we throw it
+			if (!(validationError instanceof ValidationError)) throw validationError;
+
+			// Check if the endpoint has a custom onValidationError callback
+			if (options.onValidationError) {
+				// This can possibly throw an APIError in order to customize the validation error message
+				await options.onValidationError({
+					message: validationError.message,
+					issues: validationError.issues,
+				});
+			}
+
+			throw new APIError(400, {
+				message: validationError.message,
+				code: "VALIDATION_ERROR",
+			});
+		}
 		const response = await handler(internalContext as any).catch(async (e) => {
 			if (isAPIError(e)) {
 				const onAPIError = options.onAPIError;
@@ -395,29 +517,34 @@ export const createEndpoint = <Path extends string, Options extends EndpointOpti
 			throw e;
 		});
 		const headers = internalContext.responseHeaders;
-		type ResultType = AsResponse extends true
-			? Response
-			: ReturnHeaders extends true
-				? { headers: Headers; response: Awaited<R> }
-				: Awaited<R>;
+		const status = internalContext.responseStatus;
 
 		return (
 			context.asResponse
 				? toResponse(response, {
 						headers,
+						status,
 					})
 				: context.returnHeaders
-					? {
-							headers,
-							response,
-						}
-					: response
-		) as ResultType;
+					? context.returnStatus
+						? {
+								headers,
+								response,
+								status,
+							}
+						: {
+								headers,
+								response,
+							}
+					: context.returnStatus
+						? { response, status }
+						: response
+		) as ResultType<AsResponse, ReturnHeaders, ReturnStatus>;
 	};
 	internalHandler.options = options;
 	internalHandler.path = path;
 	return internalHandler as unknown as StrictEndpoint<Path, Options, R>;
-};
+}
 
 createEndpoint.create = <E extends { use?: Middleware[] }>(opts?: E) => {
 	return <Path extends string, Opts extends EndpointOptions, R extends Promise<any>>(
@@ -437,14 +564,34 @@ createEndpoint.create = <E extends { use?: Middleware[] }>(opts?: E) => {
 };
 
 export type StrictEndpoint<Path extends string, Options extends EndpointOptions, R = any> = {
+	// asResponse cases
 	(context: InputContext<Path, Options> & { asResponse: true }): Promise<Response>;
+
+	// returnHeaders & returnStatus cases
 	(
-		context: InputContext<Path, Options> & { asResponse: false; returnHeaders?: false },
-	): Promise<R>;
+		context: InputContext<Path, Options> & { returnHeaders: true; returnStatus: true },
+	): Promise<{ headers: Headers; status: number; response: Awaited<R> }>;
 	(
-		context: InputContext<Path, Options> & { asResponse?: false; returnHeaders: true },
+		context: InputContext<Path, Options> & { returnHeaders: true; returnStatus: false },
 	): Promise<{ headers: Headers; response: Awaited<R> }>;
+	(
+		context: InputContext<Path, Options> & { returnHeaders: false; returnStatus: true },
+	): Promise<{ status: number; response: Awaited<R> }>;
+	(
+		context: InputContext<Path, Options> & { returnHeaders: false; returnStatus: false },
+	): Promise<R>;
+
+	// individual flag cases
+	(
+		context: InputContext<Path, Options> & { returnHeaders: true },
+	): Promise<{ headers: Headers; response: Awaited<R> }>;
+	(
+		context: InputContext<Path, Options> & { returnStatus: true },
+	): Promise<{ status: number; response: Awaited<R> }>;
+
+	// default case
 	(context?: InputContext<Path, Options>): Promise<R>;
+
 	options: Options;
 	path: Path;
 };
