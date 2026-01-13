@@ -130,7 +130,7 @@ export const createRouter = <E extends Record<string, Endpoint>, Config extends 
 	};
 
 	for (const endpoint of Object.values(endpoints)) {
-		if (!endpoint.options || endpoint.options?.metadata?.SERVER_ONLY) {
+		if (!endpoint.path || !endpoint.options || endpoint.options?.metadata?.SERVER_ONLY) {
 			continue;
 		}
 		addEndpoint(endpoint);
