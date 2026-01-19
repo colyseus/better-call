@@ -243,4 +243,41 @@ describe("Express Integration with body-parser", () => {
 		expect(response.body.bodyReceived).toBe(true);
 		expect(response.body.bodyContent).toEqual({ test: "data" });
 	});
+
+	it("should return early if response is already ended by previous middleware", async () => {
+		let handlerCalled = false;
+
+		const testEndpoint = createEndpoint(
+			"/test",
+			{
+				method: "GET",
+			},
+			async () => {
+				handlerCalled = true;
+				return { message: "from handler" };
+			},
+		);
+
+		const router = createRouter({
+			testEndpoint,
+		});
+
+		const testApp = express();
+
+		// Middleware that ends the response before toNodeHandler
+		testApp.use((req, res, next) => {
+			res.status(200).json({ message: "from middleware" });
+			// Response is now ended (res.writableEnded = true)
+			next();
+		});
+
+		testApp.use(toNodeHandler(router.handler));
+
+		const response = await request(testApp).get("/test").expect(200);
+
+		// The response should be from the middleware, not the handler
+		expect(response.body).toEqual({ message: "from middleware" });
+		// The handler should not have been called
+		expect(handlerCalled).toBe(false);
+	});
 });
