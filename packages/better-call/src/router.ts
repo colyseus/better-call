@@ -305,6 +305,19 @@ export const createRouter = <
 		addEndpoint,
 
 		/**
+		 * Find a route in the router.
+		 * @param method - The HTTP method of the route.
+		 * @param path - The path of the route.
+		 * @returns The route data and parameters.
+		 */
+		findRoute: (method: string, path: string) => {
+			return findRoute(router, method, path) as {
+				data: Endpoint & { path: string };
+				params: Record<string, string>;
+			};
+		},
+
+		/**
 		 * Extend the router with new endpoints
 		 * @param newEndpoints new endpoints to extend the router with
 		 * @returns new router with additional endpoints

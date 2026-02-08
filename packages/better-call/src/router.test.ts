@@ -1031,3 +1031,79 @@ describe("extend", () => {
 		expect(jsonResponse.body).toEqual({ test: "data" });
 	});
 });
+
+describe("findRoute", () => {
+	it("should find a static route by method and path", () => {
+		const endpoint = createEndpoint(
+			"/hello",
+			{ method: "GET" },
+			async () => "hello",
+		);
+		const router = createRouter({ endpoint });
+		const result = router.findRoute("GET", "/hello");
+		expect(result).toBeDefined();
+		expect(result.data.path).toBe("/hello");
+	});
+
+	it("should return route params for dynamic segments", () => {
+		const endpoint = createEndpoint(
+			"/users/:id",
+			{ method: "GET" },
+			async (c) => c.params,
+		);
+		const router = createRouter({ endpoint });
+		const result = router.findRoute("GET", "/users/42");
+		expect(result).toBeDefined();
+		expect(result.data.path).toBe("/users/:id");
+		expect(result.params).toEqual({ id: "42" });
+	});
+
+	it("should return route params for multiple dynamic segments", () => {
+		const endpoint = createEndpoint(
+			"/orgs/:orgId/members/:memberId",
+			{ method: "POST" },
+			async (c) => c.params,
+		);
+		const router = createRouter({ endpoint });
+		const result = router.findRoute("POST", "/orgs/abc/members/xyz");
+		expect(result).toBeDefined();
+		expect(result.params).toEqual({ orgId: "abc", memberId: "xyz" });
+	});
+
+	it("should return null/undefined for a non-existent path", () => {
+		const endpoint = createEndpoint(
+			"/exists",
+			{ method: "GET" },
+			async () => "ok",
+		);
+		const router = createRouter({ endpoint });
+		const result = router.findRoute("GET", "/does-not-exist");
+		expect(result?.data).toBeUndefined();
+	});
+
+	it("should not match a route with a different HTTP method", () => {
+		const endpoint = createEndpoint(
+			"/only-post",
+			{ method: "POST" },
+			async () => "ok",
+		);
+		const router = createRouter({ endpoint });
+		const result = router.findRoute("GET", "/only-post");
+		expect(result?.data).toBeUndefined();
+	});
+
+	it("should find routes added dynamically via addEndpoint", () => {
+		const router = createRouter({});
+		router.addEndpoint(
+			createEndpoint(
+				"/dynamic/:slug",
+				{ method: "PUT" },
+				async (c) => c.params,
+			),
+		);
+		const result = router.findRoute("PUT", "/dynamic/test-slug");
+		expect(result).toBeDefined();
+		expect(result.data.path).toBe("/dynamic/:slug");
+		expect(result.params).toEqual({ slug: "test-slug" });
+	});
+});
