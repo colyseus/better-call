@@ -1,7 +1,9 @@
 import { createEndpoint, createRouter } from "better-call";
 import { z } from "zod";
 
-const hello = createEndpoint(
+export const a = 1;
+
+export const hello = createEndpoint(
 	"/hello",
 	{
 		method: "POST",
@@ -32,8 +34,4 @@ const hello = createEndpoint(
 	},
 );
 
-const router = createRouter({ hello });
-
-Bun.serve({
-	fetch: router.handler,
-});
+export const router = createRouter({ hello });
