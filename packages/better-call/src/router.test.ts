@@ -972,15 +972,17 @@ describe("addEndpoint", () => {
 	it("should add an endpoint to existing router", async () => {
 		const router = createRouter({});
 
-		router.addEndpoint(createEndpoint(
-			"/dynamic_added",
-			{
-				method: "POST",
-			},
-			async (c) => {
-				return { message: "dynamically added", body: c.body };
-			},
-		));
+		router.addEndpoint(
+			createEndpoint(
+				"/dynamic_added",
+				{
+					method: "POST",
+				},
+				async (c) => {
+					return { message: "dynamically added", body: c.body };
+				},
+			),
+		);
 
 		const dynamicRequest = new Request("http://localhost/dynamic_added", {
 			method: "POST",
@@ -999,7 +1001,11 @@ describe("addEndpoint", () => {
 
 describe("extend", () => {
 	it("should extend the router with new endpoints", async () => {
-		const initialEndpoint = createEndpoint("/initial", { method: "GET" }, async () => ({}));
+		const initialEndpoint = createEndpoint(
+			"/initial",
+			{ method: "GET" },
+			async () => ({}),
+		);
 		const router = createRouter({ initialEndpoint });
 		assert.ok(router.endpoints.initialEndpoint.path === "/initial");
 
@@ -1015,7 +1021,9 @@ describe("extend", () => {
 
 		const extendedRouter = router.extend({ dynamicEndpoint });
 		assert.ok(extendedRouter.endpoints.initialEndpoint.path === "/initial");
-		assert.ok(extendedRouter.endpoints.dynamicEndpoint.path === "/dynamic_added");
+		assert.ok(
+			extendedRouter.endpoints.dynamicEndpoint.path === "/dynamic_added",
+		);
 
 		const dynamicRequest = new Request("http://localhost/dynamic_added", {
 			method: "POST",

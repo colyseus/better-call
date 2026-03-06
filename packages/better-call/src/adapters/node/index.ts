@@ -7,7 +7,7 @@ export function toNodeHandler(handler: Router["handler"]) {
 	return async (req: IncomingMessage, res: ServerResponse) => {
 		// if the response is already ended, return
 		if (res.writableEnded) {
-			return; 
+			return;
 		}
 		const protocol =
 			req.headers["x-forwarded-proto"] ||
