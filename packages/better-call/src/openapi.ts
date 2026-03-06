@@ -1,4 +1,16 @@
-import { ZodObject, ZodOptional, ZodType } from "zod";
+class _Dummy {}
+let ZodObject: any = _Dummy;
+let ZodOptional: any = _Dummy;
+let _zodLoaded = false;
+async function ensureZod() {
+	if (_zodLoaded) return;
+	_zodLoaded = true;
+	try {
+		const zod = await import("zod");
+		ZodObject = zod.ZodObject;
+		ZodOptional = zod.ZodOptional;
+	} catch {}
+}
 import type { Endpoint, EndpointOptions } from "./endpoint";
 
 export type OpenAPISchemaType =
@@ -88,7 +100,7 @@ export interface Path {
 }
 const paths: Record<string, Path> = {};
 
-function getTypeFromZodType(zodType: ZodType<any>) {
+function getTypeFromZodType(zodType: any) {
 	switch (zodType.constructor.name) {
 		case "ZodString":
 			return "string";
@@ -287,6 +299,7 @@ export async function generator(
 		url: string;
 	},
 ) {
+	await ensureZod();
 	const components = {
 		schemas: {},
 	};
