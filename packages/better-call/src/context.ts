@@ -18,6 +18,7 @@ import type {
 } from "./helper";
 import type { Middleware, MiddlewareOptions } from "./middleware";
 import type { StandardSchemaV1 } from "./standard-schema";
+import { copyHeaders } from "./to-response";
 import { isRequest } from "./utils";
 import { runValidation } from "./validator";
 
@@ -344,11 +345,7 @@ export const createInternalContext = async (
 		/**
 		 * Apply headers from the middleware to the endpoint headers
 		 */
-		if (response.headers) {
-			response.headers.forEach((value, key) => {
-				internalContext.responseHeaders.set(key, value);
-			});
-		}
+		copyHeaders(internalContext.responseHeaders, response.headers);
 	}
 	return internalContext;
 };
