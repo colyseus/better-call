@@ -1,9 +1,10 @@
-import { describe, expect, it, assert } from "vitest";
-import { createEndpoint, type Endpoint } from "./endpoint";
-import { createRouter } from "./router";
+import { assert, describe, expect, it } from "vitest";
 import { z } from "zod";
-import { APIError } from "./error";
 import { getRequest } from "./adapters/node/request";
+import type { Endpoint } from "./endpoint";
+import { createEndpoint } from "./endpoint";
+import { APIError } from "./error";
+import { createRouter } from "./router";
 import { toResponse } from "./to-response";
 
 describe("router", () => {
@@ -478,6 +479,7 @@ describe("error handling", () => {
 		);
 
 		let errorCaught = false;
+		let receivedRequest: Request | undefined;
 		const customResponse = new Response("Custom error response", {
 			status: 418,
 		});
@@ -485,15 +487,18 @@ describe("error handling", () => {
 		const router = createRouter(
 			{ endpoint },
 			{
-				onError: (e) => {
+				onError: (error, request) => {
 					errorCaught = true;
+					receivedRequest = request;
 					return customResponse;
 				},
 			},
 		);
 
-		const response = await router.handler(new Request("http://localhost"));
+		const request = new Request("http://localhost");
+		const response = await router.handler(request);
 		expect(errorCaught).toBe(true);
+		expect(receivedRequest).toBe(request);
 		expect(response).toBe(customResponse);
 		expect(response.status).toBe(418);
 	});
@@ -517,7 +522,7 @@ describe("error handling", () => {
 		const router = createRouter(
 			{ endpoint },
 			{
-				onError: (e) => {
+				onError: (error, request) => {
 					errorCaught = true;
 					// Convert APIError to Response
 					return toResponse(apiError);
@@ -548,7 +553,7 @@ describe("error handling", () => {
 		const router = createRouter(
 			{ endpoint },
 			{
-				onError: (e) => {
+				onError: (error, request) => {
 					// Throw the error in the callback
 					throw newError;
 				},
@@ -614,6 +619,73 @@ describe("error handling", () => {
 		expect(response.status).toBe(404);
 		const body = await response.json();
 		expect(body.message).toBe("Resource not found");
+	});
+
+	describe("invalid JSON body", () => {
+		it("should return 400 for empty JSON body", async () => {
+			const endpoint = createEndpoint(
+				"/post",
+				{
+					method: "POST",
+				},
+				async (c) => {
+					return c.body;
+				},
+			);
+			const router = createRouter({ endpoint });
+			const request = new Request("http://localhost/post", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: "",
+			});
+			const response = await router.handler(request);
+			expect(response.status).toBe(400);
+			const body = await response.json();
+			expect(body.code).toBe("BAD_REQUEST");
+			expect(body.message).toBe("Invalid JSON in request body");
+		});
+
+		it("should return 400 for malformed JSON body", async () => {
+			const endpoint = createEndpoint(
+				"/post",
+				{
+					method: "POST",
+				},
+				async (c) => {
+					return c.body;
+				},
+			);
+			const router = createRouter({ endpoint });
+			const request = new Request("http://localhost/post", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: "not json",
+			});
+			const response = await router.handler(request);
+			expect(response.status).toBe(400);
+			const body = await response.json();
+			expect(body.code).toBe("BAD_REQUEST");
+		});
+
+		it("should return 200 for valid JSON body", async () => {
+			const endpoint = createEndpoint(
+				"/post",
+				{
+					method: "POST",
+				},
+				async (c) => {
+					return c.body;
+				},
+			);
+			const router = createRouter({ endpoint });
+			const request = new Request("http://localhost/post", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: "{}",
+			});
+			const response = await router.handler(request);
+			expect(response.status).toBe(200);
+		});
 	});
 
 	describe("allowedMediaTypes", () => {
@@ -930,6 +1002,93 @@ describe("error handling", () => {
 	});
 });
 
+describe("onRequest and onResponse callbacks", () => {
+	it("should pass request to onRequest callback", async () => {
+		const endpoint = createEndpoint(
+			"/",
+			{
+				method: "GET",
+			},
+			async () => {
+				return "hello world";
+			},
+		);
+
+		let receivedRequest: Request | undefined;
+		const router = createRouter(
+			{ endpoint },
+			{
+				onRequest: (request) => {
+					receivedRequest = request;
+				},
+			},
+		);
+
+		const request = new Request("http://localhost");
+		await router.handler(request);
+		expect(receivedRequest).toBe(request);
+	});
+
+	it("should pass response and request to onResponse callback", async () => {
+		const endpoint = createEndpoint(
+			"/",
+			{
+				method: "GET",
+			},
+			async () => {
+				return "hello world";
+			},
+		);
+
+		let receivedResponse: Response | undefined;
+		let receivedRequest: Request | undefined;
+		const router = createRouter(
+			{ endpoint },
+			{
+				onResponse: (response, request) => {
+					receivedResponse = response;
+					receivedRequest = request;
+				},
+			},
+		);
+
+		const request = new Request("http://localhost");
+		await router.handler(request);
+		expect(receivedRequest).toBe(request);
+		expect(receivedResponse).toBeInstanceOf(Response);
+	});
+
+	it("should pass request to onError callback", async () => {
+		const endpoint = createEndpoint(
+			"/",
+			{
+				method: "GET",
+			},
+			async () => {
+				throw new Error("Test error");
+			},
+		);
+
+		let receivedError: unknown;
+		let receivedRequest: Request | undefined;
+		const router = createRouter(
+			{ endpoint },
+			{
+				onError: (error, request) => {
+					receivedError = error;
+					receivedRequest = request;
+				},
+			},
+		);
+
+		const request = new Request("http://localhost");
+		await router.handler(request);
+		expect(receivedRequest).toBe(request);
+		expect(receivedError).toBeInstanceOf(Error);
+		expect((receivedError as Error).message).toBe("Test error");
+	});
+});
+
 describe("base path", () => {
 	it("should work with base path", async () => {
 		const endpoint = createEndpoint(
@@ -965,6 +1124,142 @@ describe("base path", () => {
 		expect(response.status).toBe(200);
 		const text = await response.text();
 		expect(text).toBe("hello world");
+	});
+
+	it("should not route a path where the base path is not a leading prefix", async () => {
+		const endpoint = createEndpoint(
+			"/test",
+			{
+				method: "GET",
+			},
+			async () => {
+				return "hello world";
+			},
+		);
+		const router = createRouter({ endpoint }, { basePath: "/api" });
+		// The base path appears mid-path, not as a leading prefix, so it should
+		// not be stripped and the request should not resolve onto "/test".
+		const response = await router.handler(
+			new Request("http://localhost/x/api/test"),
+		);
+		expect(response.status).toBe(404);
+	});
+
+	it("should not invoke a handler when the base path appears after another segment", async () => {
+		let called = false;
+		const endpoint = createEndpoint(
+			"/test",
+			{
+				method: "GET",
+			},
+			async () => {
+				called = true;
+				return "hello world";
+			},
+		);
+		const router = createRouter({ endpoint }, { basePath: "/api" });
+		const response = await router.handler(
+			new Request("http://localhost/foo/api/test"),
+		);
+		expect(response.status).toBe(404);
+		expect(called).toBe(false);
+	});
+
+	it("should normalize a base path with a trailing slash", async () => {
+		const endpoint = createEndpoint(
+			"/test",
+			{
+				method: "GET",
+			},
+			async () => {
+				return "hello world";
+			},
+		);
+		const router = createRouter({ endpoint }, { basePath: "/api/" });
+		const response = await router.handler(
+			new Request("http://localhost/api/test"),
+		);
+		expect(response.status).toBe(200);
+		expect(await response.text()).toBe("hello world");
+	});
+
+	it("should not route when the base path matches without a '/' boundary", async () => {
+		let called = false;
+		const endpoint = createEndpoint(
+			"/test",
+			{
+				method: "GET",
+			},
+			async () => {
+				called = true;
+				return "hello world";
+			},
+		);
+		const router = createRouter({ endpoint }, { basePath: "/admin" });
+		// "/admin" is a leading substring of "/administrator" but not a
+		// "/"-boundary prefix, so the request must not resolve onto "/test".
+		const response = await router.handler(
+			new Request("http://localhost/administrator/test"),
+		);
+		expect(response.status).toBe(404);
+		expect(called).toBe(false);
+	});
+});
+
+/**
+ * @see https://github.com/better-auth/better-call/issues/12
+ */
+describe("streaming response", () => {
+	it("returns a Response with a ReadableStream body unchanged from the handler", async () => {
+		const encoder = new TextEncoder();
+		const messages = ["Message 0\n", "Message 1\n", "Message 2\n"];
+		const endpoint = createEndpoint(
+			"/ai/realtime",
+			{ method: "POST" },
+			async () => {
+				const queue = [...messages];
+				const stream = new ReadableStream({
+					pull(controller) {
+						const next = queue.shift();
+						if (next === undefined) {
+							controller.close();
+							return;
+						}
+						controller.enqueue(encoder.encode(next));
+					},
+				});
+				return new Response(stream, {
+					status: 200,
+					headers: {
+						"Content-Type": "application/x-ndjson",
+						"Cache-Control": "no-cache",
+					},
+				});
+			},
+		);
+		const router = createRouter({ endpoint });
+
+		const res = await router.handler(
+			new Request("http://localhost/ai/realtime", { method: "POST" }),
+		);
+
+		expect(res.status).toBe(200);
+		expect(res.headers.get("Content-Type")).toBe("application/x-ndjson");
+		expect(res.headers.get("Cache-Control")).toBe("no-cache");
+
+		if (!res.body) {
+			throw new Error("Body is null");
+		}
+		const reader = res.body.getReader();
+		const decoder = new TextDecoder();
+		let combined = "";
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			combined += decoder.decode(value, { stream: true });
+		}
+		combined += decoder.decode();
+		expect(combined).toBe(messages.join(""));
 	});
 });
 

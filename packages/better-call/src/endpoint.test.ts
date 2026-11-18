@@ -1,9 +1,9 @@
+import * as v from "valibot";
 import { describe, expect, expectTypeOf, it } from "vitest";
-import { createEndpoint } from "./endpoint";
 import { z } from "zod";
+import { createEndpoint } from "./endpoint";
 import { APIError, BetterCallError } from "./error";
 import { createMiddleware } from "./middleware";
-import * as v from "valibot";
 
 describe("validation", (it) => {
 	it("should validate body and throw validation error", async () => {
@@ -359,10 +359,10 @@ describe("types", async () => {
 			},
 		);
 		// method should be optional for array methods (defaults to first method)
-		endpoint({});
+		void endpoint({});
 		// but you can still explicitly specify a method
-		endpoint({ method: "POST" });
-		endpoint({ method: "GET" });
+		void endpoint({ method: "POST" });
+		void endpoint({ method: "GET" });
 		const wildCardMethodEndpoint = createEndpoint(
 			"/test",
 			{
@@ -375,7 +375,7 @@ describe("types", async () => {
 			},
 		);
 		//@ts-expect-error - wildcard method should still require explicit method
-		wildCardMethodEndpoint({});
+		void wildCardMethodEndpoint({});
 	});
 	it("response", async () => {
 		const endpoint1 = createEndpoint(
@@ -424,7 +424,7 @@ describe("types", async () => {
 					});
 				},
 			);
-		} catch (e) {
+		} catch {
 			//should throw BetterCallError
 		}
 	});
@@ -1052,5 +1052,36 @@ describe("onAPIError", () => {
 		await endpoint().catch(() => {});
 		expect(error).toBeDefined();
 		expect(error?.status).toBe("UNAUTHORIZED");
+	});
+});
+
+describe("responseHeaders", () => {
+	it("exposes the live response headers accumulator inside the handler", async () => {
+		const endpoint = createEndpoint("/test", { method: "GET" }, async (ctx) => {
+			ctx.setCookie("session", "abc");
+			ctx.setHeader("x-custom", "1");
+			const setCookies = ctx.responseHeaders.getSetCookie();
+			const custom = ctx.responseHeaders.get("x-custom");
+			return { setCookies, custom };
+		});
+		const result = await endpoint();
+		expect(result.custom).toBe("1");
+		expect(result.setCookies).toHaveLength(1);
+		expect(result.setCookies[0]).toMatch(/^session=abc/);
+	});
+
+	it("lets a later handler step observe what an earlier one wrote", async () => {
+		const endpoint = createEndpoint("/test", { method: "GET" }, async (ctx) => {
+			ctx.setCookie("first", "v1");
+			const alreadySet = ctx.responseHeaders
+				.getSetCookie()
+				.some((c) => c.startsWith("first="));
+			if (!alreadySet) {
+				ctx.setCookie("first", "v2");
+			}
+			return { count: ctx.responseHeaders.getSetCookie().length };
+		});
+		const result = await endpoint();
+		expect(result.count).toBe(1);
 	});
 });

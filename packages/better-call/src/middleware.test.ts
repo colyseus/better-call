@@ -1,7 +1,7 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
-import { createMiddleware } from "./middleware";
 import { createEndpoint } from "./endpoint";
 import { APIError, kAPIErrorHeaderSymbol } from "./error";
+import { createMiddleware } from "./middleware";
 
 describe("type", () => {
 	it("should infer middleware returned type", async () => {
@@ -159,6 +159,19 @@ describe("creator", () => {
 			hello: "world",
 			test: "payload",
 		});
+	});
+
+	it("should not crash when APIError flows through nested middleware", async () => {
+		const inner = createMiddleware(async () => {
+			throw new APIError("FORBIDDEN", { message: "blocked" });
+		});
+
+		const outer = createMiddleware(async (ctx) => {
+			return await inner(ctx);
+		});
+
+		// Should throw APIError, NOT TypeError: Cannot redefine property
+		await expect(outer({})).rejects.toThrow(APIError);
 	});
 
 	it("should get header set in middleware when error is thrown", async () => {

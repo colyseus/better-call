@@ -1,6 +1,10 @@
+import type * as Zod from "zod";
+import type { Endpoint, EndpointOptions } from "./endpoint";
+
+// zod is an optional peer: load it lazily so importing better-call never requires it
 class _Dummy {}
-let ZodObject: any = _Dummy;
-let ZodOptional: any = _Dummy;
+let ZodObject: typeof Zod.ZodObject = _Dummy as any;
+let ZodOptional: typeof Zod.ZodOptional = _Dummy as any;
 let _zodLoaded = false;
 async function ensureZod() {
 	if (_zodLoaded) return;
@@ -11,7 +15,6 @@ async function ensureZod() {
 		ZodOptional = zod.ZodOptional;
 	} catch {}
 }
-import type { Endpoint, EndpointOptions } from "./endpoint";
 
 export type OpenAPISchemaType =
 	| "string"
@@ -28,15 +31,15 @@ export interface OpenAPIParameter {
 	required?: boolean;
 	schema?: {
 		type: OpenAPISchemaType;
-		format?: string;
+		format?: string | undefined;
 		items?: {
 			type: OpenAPISchemaType;
 		};
 		enum?: string[];
 		minLength?: number;
-		description?: string;
-		default?: string;
-		example?: string;
+		description?: string | undefined;
+		default?: string | undefined;
+		example?: string | undefined;
 	};
 }
 
@@ -154,7 +157,7 @@ function getRequestBody(options: EndpointOptions): any {
 		options.body instanceof ZodObject ||
 		options.body instanceof ZodOptional
 	) {
-		// @ts-ignore
+		// @ts-expect-error
 		const shape = options.body.shape;
 		if (!shape) return undefined;
 		const properties: Record<string, any> = {};

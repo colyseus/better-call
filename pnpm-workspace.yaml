@@ -4,8 +4,9 @@ packages:
 
 blockExoticSubdeps: true
 
-onlyBuiltDependencies:
-  - esbuild
+allowBuilds:
+  esbuild: true
+  lefthook: true
 
 trustPolicy: no-downgrade
 

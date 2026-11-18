@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { toResponse } from "./to-response";
 import { APIError } from "./error";
+import { toResponse } from "./to-response";
 
 describe("toResponse", () => {
 	describe("basic types", async () => {
@@ -264,7 +264,9 @@ describe("toResponse", () => {
 				first: {
 					ref1: "[Circular ref-1]",
 				},
-				second: "[Circular ref-1]",
+				second: {
+					ref1: "[Circular ref-1]",
+				},
 			});
 		});
 
@@ -317,6 +319,33 @@ describe("toResponse", () => {
 			const body = await response.text();
 			const parsed = JSON.parse(body);
 			expect(parsed).toEqual([3, [1, 2, "[Circular ref-0]"]]);
+		});
+	});
+
+	/**
+	 * @see https://github.com/better-auth/better-call/issues/86
+	 */
+	describe("shared but non-cyclic references", () => {
+		it("serializes shared object references in full", async () => {
+			const shared = { foo: 1 };
+			const data = { a: shared, b: shared };
+			const response = toResponse(data);
+			const body = await response.text();
+			expect(JSON.parse(body)).toEqual({
+				a: { foo: 1 },
+				b: { foo: 1 },
+			});
+		});
+
+		it("serializes shared array references in full", async () => {
+			const shared = [1, 2, 3];
+			const data = { a: shared, b: shared };
+			const response = toResponse(data);
+			const body = await response.text();
+			expect(JSON.parse(body)).toEqual({
+				a: [1, 2, 3],
+				b: [1, 2, 3],
+			});
 		});
 	});
 
@@ -408,6 +437,209 @@ describe("toResponse", () => {
 					refs: ["[Circular ref-0]"],
 				},
 			});
+		});
+	});
+
+	/**
+	 * @see https://github.com/better-auth/better-call/issues/118
+	 */
+	describe("multiple Set-Cookie preservation", () => {
+		it("preserves every Set-Cookie when merging init.headers onto an existing Response", () => {
+			const existing = new Response("ok");
+			existing.headers.append("set-cookie", "a=1; Path=/");
+			const initHeaders = new Headers();
+			initHeaders.append("set-cookie", "b=2; Path=/");
+			initHeaders.append("set-cookie", "c=3; Path=/");
+
+			const response = toResponse(existing, { headers: initHeaders });
+
+			expect(response.headers.getSetCookie()).toEqual([
+				"a=1; Path=/",
+				"b=2; Path=/",
+				"c=3; Path=/",
+			]);
+		});
+
+		it("preserves every Set-Cookie from init.headers in JSON-flag responses", () => {
+			const initHeaders = new Headers();
+			initHeaders.append("set-cookie", "a=1; Path=/");
+			initHeaders.append("set-cookie", "b=2; Path=/");
+
+			const response = toResponse(
+				{ _flag: "json", body: { ok: true } },
+				{ headers: initHeaders },
+			);
+
+			expect(response.headers.getSetCookie()).toEqual([
+				"a=1; Path=/",
+				"b=2; Path=/",
+			]);
+		});
+
+		it("preserves every Set-Cookie from data.headers in JSON-flag responses", () => {
+			const dataHeaders = new Headers();
+			dataHeaders.append("set-cookie", "a=1; Path=/");
+			dataHeaders.append("set-cookie", "b=2; Path=/");
+
+			const response = toResponse({
+				_flag: "json",
+				body: { ok: true },
+				headers: dataHeaders,
+			});
+
+			expect(response.headers.getSetCookie()).toEqual([
+				"a=1; Path=/",
+				"b=2; Path=/",
+			]);
+		});
+
+		it("preserves every Set-Cookie from routerResponse.headers in JSON-flag responses", () => {
+			const routerHeaders = new Headers();
+			routerHeaders.append("set-cookie", "a=1; Path=/");
+			routerHeaders.append("set-cookie", "b=2; Path=/");
+
+			const response = toResponse({
+				_flag: "json",
+				body: { ok: true },
+				routerResponse: { headers: routerHeaders },
+			});
+
+			expect(response.headers.getSetCookie()).toEqual([
+				"a=1; Path=/",
+				"b=2; Path=/",
+			]);
+		});
+
+		it("propagates non-cookie headers from routerResponse.headers in JSON-flag responses", () => {
+			const response = toResponse({
+				_flag: "json",
+				body: { ok: true },
+				routerResponse: {
+					headers: { "x-custom": "from-router" },
+				},
+			});
+
+			expect(response.headers.get("x-custom")).toBe("from-router");
+		});
+	});
+
+	describe("Request header stripping", () => {
+		const REQUEST_ONLY_HEADERS = [
+			"host",
+			"user-agent",
+			"referer",
+			"from",
+			"expect",
+			"authorization",
+			"proxy-authorization",
+			"cookie",
+			"origin",
+			"accept-charset",
+			"accept-encoding",
+			"accept-language",
+			"if-match",
+			"if-none-match",
+			"if-modified-since",
+			"if-unmodified-since",
+			"if-range",
+			"range",
+			"max-forwards",
+			"connection",
+			"keep-alive",
+			"transfer-encoding",
+			"te",
+			"upgrade",
+			"trailer",
+			"proxy-connection",
+			"content-length",
+		];
+
+		it("should strip request-only headers from init when building JSON response", async () => {
+			const requestHeaders = new Headers({
+				"content-length": "42",
+				host: "example.com",
+				accept: "text/html",
+				"user-agent": "TestAgent/1.0",
+				cookie: "session=abc",
+				"x-custom": "keep-me",
+			});
+			const response = toResponse(
+				{ message: "ok" },
+				{ headers: requestHeaders },
+			);
+			for (const h of REQUEST_ONLY_HEADERS) {
+				expect(response.headers.has(h)).toBe(false);
+			}
+			expect(response.headers.get("x-custom")).toBe("keep-me");
+		});
+
+		it("should strip request-only headers from init on fallback path", async () => {
+			const requestHeaders = new Headers({
+				"content-length": "100",
+				"transfer-encoding": "chunked",
+				origin: "http://evil.com",
+				"x-request-id": "keep-me",
+			});
+			const response = toResponse(undefined, { headers: requestHeaders });
+			for (const h of REQUEST_ONLY_HEADERS) {
+				expect(response.headers.has(h)).toBe(false);
+			}
+			expect(response.headers.get("x-request-id")).toBe("keep-me");
+		});
+
+		it("should strip request-only headers when merging into existing Response", async () => {
+			const existingResponse = new Response("body", {
+				headers: { "x-existing": "yes" },
+			});
+			const requestHeaders = new Headers({
+				"content-length": "999",
+				host: "attacker.com",
+				"x-custom": "also-keep",
+			});
+			const response = toResponse(existingResponse, {
+				headers: requestHeaders,
+			});
+			expect(response.headers.has("content-length")).toBe(false);
+			expect(response.headers.has("host")).toBe(false);
+			expect(response.headers.get("x-existing")).toBe("yes");
+			expect(response.headers.get("x-custom")).toBe("also-keep");
+		});
+
+		it("should strip request-only headers when merging plain-object headers into existing Response", async () => {
+			const existingResponse = new Response("body", {
+				headers: { "x-existing": "yes" },
+			});
+			const response = toResponse(existingResponse, {
+				headers: {
+					"content-length": "999",
+					host: "attacker.com",
+					authorization: "Bearer secret",
+					"x-custom": "also-keep",
+				},
+			});
+			expect(response.headers.has("content-length")).toBe(false);
+			expect(response.headers.has("host")).toBe(false);
+			expect(response.headers.has("authorization")).toBe(false);
+			expect(response.headers.get("x-existing")).toBe("yes");
+			expect(response.headers.get("x-custom")).toBe("also-keep");
+		});
+
+		it("should strip request-only headers from APIError responses", async () => {
+			const error = new APIError("BAD_REQUEST", {
+				message: "bad request",
+			});
+			const requestHeaders = new Headers({
+				"content-length": "42",
+				cookie: "session=abc",
+				authorization: "Bearer secret",
+				"x-custom": "keep-me",
+			});
+			const response = toResponse(error, { headers: requestHeaders });
+			expect(response.status).toBe(400);
+			expect(response.headers.has("content-length")).toBe(false);
+			expect(response.headers.has("cookie")).toBe(false);
+			expect(response.headers.has("authorization")).toBe(false);
+			expect(response.headers.get("x-custom")).toBe("keep-me");
 		});
 	});
 

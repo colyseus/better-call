@@ -8,12 +8,17 @@
 		// third party libraries
 		"attw",
 		"bumpp",
+		"changelogithub",
+		"elif",
+		"nvmrc",
+		"refspec",
 
 		// auth words
 		"scim",
 
 		// proper names
 		"Bereket",
+		"colyseus",
 		"Engida"
 	],
 	"ignorePaths": [

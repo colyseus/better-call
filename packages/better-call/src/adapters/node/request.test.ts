@@ -1,7 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
-import { getRequest, setResponse } from "./request";
 import { IncomingMessage, ServerResponse } from "node:http";
 import { Socket } from "node:net";
+import { describe, expect, it, vi } from "vitest";
+import { getRequest, setResponse } from "./request";
 
 describe("getRequest", () => {
 	it("should handle Express pre-parsed body", async () => {
@@ -16,6 +16,10 @@ describe("getRequest", () => {
 			host: "localhost:3000",
 			"content-type": "application/json",
 		};
+		Object.defineProperty(req, "readableEnded", {
+			value: true,
+			configurable: true,
+		});
 
 		// Simulate Express body-parser already parsed the body
 		req.body = { message: "Hello World", id: 123 };
@@ -46,6 +50,10 @@ describe("getRequest", () => {
 			host: "localhost:3000",
 			"content-type": "text/plain",
 		};
+		Object.defineProperty(req, "readableEnded", {
+			value: true,
+			configurable: true,
+		});
 
 		// Simulate Express body-parser parsed a string body
 		req.body = "Plain text body";
@@ -58,6 +66,133 @@ describe("getRequest", () => {
 		expect(request).toBeInstanceOf(Request);
 		const bodyText = await request.text();
 		expect(bodyText).toBe("Plain text body");
+	});
+
+	it("should fallback to raw stream for empty pre-parsed form-urlencoded body", async () => {
+		const socket = new Socket();
+		const req = new IncomingMessage(socket) as any;
+
+		req.url = "/oauth2/token";
+		req.method = "POST";
+		req.headers = {
+			host: "localhost:3000",
+			"content-type": "application/x-www-form-urlencoded",
+			"content-length": "29",
+		};
+		req.httpVersionMajor = 1;
+
+		// express.json() can set empty object for non-JSON content type
+		req.body = {};
+
+		// Mock the stream events for raw body path
+		req.on = vi.fn();
+		req.pause = vi.fn();
+		req.resume = vi.fn();
+		req.destroy = vi.fn();
+		req.destroyed = false;
+
+		const request = getRequest({
+			request: req,
+			base: "http://localhost:3000",
+		});
+
+		expect(request).toBeInstanceOf(Request);
+		expect(request.body).not.toBeNull();
+		expect(req.on).toHaveBeenCalledWith("error", expect.any(Function));
+		expect(req.on).toHaveBeenCalledWith("end", expect.any(Function));
+		expect(req.on).toHaveBeenCalledWith("data", expect.any(Function));
+	});
+
+	it("should prefer raw stream over pre-parsed body when stream is still readable", async () => {
+		const socket = new Socket();
+		const req = new IncomingMessage(socket) as any;
+
+		req.url = "/api/test";
+		req.method = "POST";
+		req.headers = {
+			host: "localhost:3000",
+			"content-type": "application/json",
+			"content-length": "20",
+		};
+		req.httpVersionMajor = 1;
+		req.body = { source: "middleware" };
+
+		req.on = vi.fn();
+		req.pause = vi.fn();
+		req.resume = vi.fn();
+		req.destroy = vi.fn();
+		req.destroyed = false;
+
+		const request = getRequest({
+			request: req,
+			base: "http://localhost:3000",
+		});
+
+		expect(request).toBeInstanceOf(Request);
+		expect(request.body).not.toBeNull();
+		expect(req.on).toHaveBeenCalledWith("error", expect.any(Function));
+		expect(req.on).toHaveBeenCalledWith("end", expect.any(Function));
+		expect(req.on).toHaveBeenCalledWith("data", expect.any(Function));
+	});
+
+	it("should serialize pre-parsed form-urlencoded object as urlencoded string", async () => {
+		const socket = new Socket();
+		const req = new IncomingMessage(socket) as any;
+
+		req.url = "/oauth2/token";
+		req.method = "POST";
+		req.headers = {
+			host: "localhost:3000",
+			"content-type": "application/x-www-form-urlencoded",
+		};
+		Object.defineProperty(req, "readableEnded", {
+			value: true,
+			configurable: true,
+		});
+
+		req.body = {
+			grant_type: "client_credentials",
+			scope: ["openid", "profile"],
+		};
+
+		const request = getRequest({
+			request: req,
+			base: "http://localhost:3000",
+		});
+
+		expect(request).toBeInstanceOf(Request);
+		const bodyText = await request.text();
+		expect(bodyText).toBe(
+			"grant_type=client_credentials&scope=openid&scope=profile",
+		);
+	});
+
+	it("should keep empty parsed JSON object when stream is already consumed", async () => {
+		const socket = new Socket();
+		const req = new IncomingMessage(socket) as any;
+
+		req.url = "/api/test";
+		req.method = "POST";
+		req.headers = {
+			host: "localhost:3000",
+			"content-type": "application/json",
+		};
+
+		// Simulate middleware that already consumed stream and parsed empty JSON object
+		Object.defineProperty(req, "readableEnded", {
+			value: true,
+			configurable: true,
+		});
+		req.body = {};
+
+		const request = getRequest({
+			request: req,
+			base: "http://localhost:3000",
+		});
+
+		expect(request).toBeInstanceOf(Request);
+		const bodyText = await request.text();
+		expect(bodyText).toBe("{}");
 	});
 
 	it("should handle Express sub-router with baseUrl", async () => {
@@ -130,6 +265,10 @@ describe("getRequest", () => {
 			host: "example.com",
 			"content-type": "application/json",
 		};
+		Object.defineProperty(req, "readableEnded", {
+			value: true,
+			configurable: true,
+		});
 		req.body = { event: "user.created", data: { id: 1, name: "Test" } };
 
 		const request = getRequest({
@@ -276,5 +415,64 @@ describe("setResponse", () => {
 		// statusCode should already be 400 BEFORE writeHead is called
 		expect(statusCodeBeforeWriteHead).toBe(400);
 		expect(res.statusCode).toBe(400);
+	});
+
+	/**
+	 * Regression test for streaming response truncation issue
+	 *
+	 * @see https://github.com/better-auth/better-call/issues/123
+	 *
+	 * Previously res.end() was inside the streaming for-loop's inner block,
+	 * which could cause it to be skipped when backpressure triggered an
+	 * early return to wait for the "drain" event, truncating the response.
+	 */
+	it("should call res.end() after all streamed chunks are written", async () => {
+		const socket = new Socket();
+		const req = new IncomingMessage(socket);
+		const res = new ServerResponse(req);
+
+		const callOrder: string[] = [];
+
+		// setResponse calls next() without awaiting it, so we need to
+		// track when res.end() is called to know streaming is complete.
+		const endPromise = new Promise<void>((resolve) => {
+			res.write = vi.fn().mockImplementation(() => {
+				callOrder.push("write");
+				return true;
+			});
+			res.end = vi.fn().mockImplementation(() => {
+				callOrder.push("end");
+				resolve();
+				return res;
+			});
+		});
+
+		const encoder = new TextEncoder();
+		const chunks = ["chunk1", "chunk2", "chunk3"];
+		let i = 0;
+		const stream = new ReadableStream({
+			pull(controller) {
+				if (i < chunks.length) {
+					controller.enqueue(encoder.encode(chunks[i++]));
+				} else {
+					controller.close();
+				}
+			},
+		});
+
+		const webResponse = new Response(stream, {
+			status: 200,
+			headers: { "Content-Type": "text/plain" },
+		});
+
+		await setResponse(res, webResponse);
+		await endPromise;
+
+		// res.write must have been called for each chunk
+		expect(res.write).toHaveBeenCalledTimes(3);
+		// res.end() must be called exactly once
+		expect(res.end).toHaveBeenCalledTimes(1);
+		// res.end() must come after all writes
+		expect(callOrder).toEqual(["write", "write", "write", "end"]);
 	});
 });
