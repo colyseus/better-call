@@ -7,7 +7,10 @@
 set -e
 
 UPSTREAM_URL="git@github.com:better-auth/better-call.git"
-UPSTREAM_BRANCH="main"
+# Not "main": upstream 1.4.x renames wildcard params (rou3 0.9), and published
+# @colyseus/core depends on ^1.3.x. Upstream stopped backporting here after
+# 1.3.8, so newer fixes must be cherry-picked from upstream/main.
+UPSTREAM_BRANCH="v1.3.x"
 
 # Check if upstream remote exists, add if not
 if ! git remote | grep -q "^upstream$"; then
@@ -25,7 +28,7 @@ if ! git fetch upstream; then
     exit 1
 fi
 
-# Verify upstream/main exists
+# Verify upstream branch exists
 if ! git rev-parse --verify upstream/$UPSTREAM_BRANCH >/dev/null 2>&1; then
     echo "Error: upstream/$UPSTREAM_BRANCH not found after fetch."
     exit 1
@@ -34,7 +37,7 @@ fi
 echo "Checking out main branch..."
 git checkout main
 
-echo "Merging upstream/main into main..."
+echo "Merging upstream/$UPSTREAM_BRANCH into main..."
 git merge upstream/$UPSTREAM_BRANCH
 
 echo "✓ Successfully synced with upstream!"
